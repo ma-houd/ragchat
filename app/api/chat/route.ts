@@ -26,12 +26,12 @@ export async function POST(req: Request) {
       filter_document_id: documentId
     })
 
-    console.log('chunks:', chunks, 'error:', error)
-
     if (!chunks || chunks.length === 0) {
-      return Response.json({
-        answer: "Je ne trouve pas cette information dans le document fourni.",
-        sources: []
+      return new Response("I can't find this information from the given document.", {
+        headers: { 
+          "Content-Type": "text/plain",
+          "X-Sources": Buffer.from(JSON.stringify([])).toString('base64')
+        }
       })
     }
 
@@ -40,29 +40,51 @@ export async function POST(req: Request) {
       .map((c: any, i: number) => `[${i + 1}] ${c.content}`)
       .join('\n\n')
 
-    // 4. Generate
-    const llm = new ChatOpenAI({ modelName: 'gpt-4o-mini', temperature: 0 })
+    //4. Generate
+    const llm = new ChatOpenAI({ 
+      modelName: 'gpt-4o-mini', 
+      temperature: 0,
+      streaming: true 
+    })
 
-    const prompt = `Tu es un assistant qui répond UNIQUEMENT en te basant sur le contexte fourni.
-Si la réponse n'est pas dans le contexte, réponds : "Je ne trouve pas cette information dans le document fourni."
-N'utilise jamais tes connaissances générales.
-Cite tes sources avec [1], [2], etc.
+    const prompt = `You are an assistant which answers ONLY based on the given context.
+    If the answer is not in the context, answer : "I can't find this information from the given document."
+    Never use your general knowledge.
+    Cite your sources with [1], [2], etc.
 
-Contexte :
-${context}
+    Context :
+    ${context}
 
-Question : ${question}
+    Question : ${question}
 
-Réponse :`
+    Answer :`
 
-    const response = await llm.invoke(prompt)
+    const stream = await llm.stream(prompt)
 
-    return Response.json({
-      answer: response.content,
-      sources: chunks.map((c: any, i: number) => ({
-        id: i + 1,
-        content: c.content.substring(0, 200) + '...'
-      }))
+    const readableStream = new ReadableStream({
+      async start(controller) {
+        for await (const chunk of stream) {
+          const text = chunk.content as string
+          if (text) controller.enqueue(new TextEncoder().encode(text))
+        }
+        controller.close()
+      }
+    })
+
+
+    const sourcesData = chunks.map((c: any, i: number) => ({
+      id: i + 1,
+      content: c.content.substring(0, 200) + '...'
+    }))
+
+    return new Response(readableStream, {
+      headers: { 
+        "Content-Type": "text/plain",
+        "X-Sources": Buffer.from(JSON.stringify(chunks.map((c: any, i: number) => ({
+          id: i + 1,
+          content: c.content.substring(0, 200) + '...'
+        })))).toString('base64')
+      }
     })
   } catch (err: any) {
     console.error(err)
